@@ -1,5 +1,4 @@
--- AimBot Core Logic
--- Ten plik umieść w swoim repozytorium GitHub
+-- AimBot Core Logic - POPRAWIONA WERSJA
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -34,7 +33,17 @@ local CurrentTarget = nil
 local AimConnection = nil
 local SilentAimTarget = nil
 local FOVCircle = nil
-local Snapline = Drawing.new("Line")
+local Snapline = nil
+
+-- Sprawdzenie czy Drawing API jest dostępne
+local function IsDrawingSupported()
+    return Drawing and Drawing.new
+end
+
+-- Debug function
+local function DebugPrint(message)
+    print("[AimBot Debug]: " .. tostring(message))
+end
 
 -- Funkcje pomocnicze
 local function IsAlive(player)
@@ -132,14 +141,19 @@ end
 
 -- FOV Circle Management
 local function CreateFOVCircle()
+    if not IsDrawingSupported() then
+        DebugPrint("Drawing API nie jest wspierane!")
+        return false
+    end
+    
     if FOVCircle then 
         pcall(function() FOVCircle:Remove() end)
         FOVCircle = nil
     end
     
-    pcall(function()
+    local success, err = pcall(function()
         FOVCircle = Drawing.new("Circle")
-        FOVCircle.Visible = AimBotCore.Config.FOVVisible
+        FOVCircle.Visible = AimBotCore.Config.FOVVisible and AimBotCore.Config.Enabled
         FOVCircle.Radius = AimBotCore.Config.FOV
         FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
         FOVCircle.Color = AimBotCore.Config.FOVColor
@@ -148,21 +162,52 @@ local function CreateFOVCircle()
         FOVCircle.NumSides = 64
         FOVCircle.Transparency = 0.7
     end)
+    
+    if not success then
+        DebugPrint("Błąd tworzenia FOV Circle: " .. tostring(err))
+        return false
+    end
+    
+    DebugPrint("FOV Circle utworzony pomyślnie")
+    return true
 end
 
 local function UpdateFOVCircle()
     if FOVCircle then
-        pcall(function()
+        local success, err = pcall(function()
             FOVCircle.Visible = AimBotCore.Config.FOVVisible and AimBotCore.Config.Enabled
             FOVCircle.Radius = AimBotCore.Config.FOV
             FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
             FOVCircle.Color = AimBotCore.Config.FOVColor
         end)
+        if not success then
+            DebugPrint("Błąd aktualizacji FOV Circle: " .. tostring(err))
+        end
     end
 end
 
 -- Snapline Management
+local function CreateSnapline()
+    if not IsDrawingSupported() then
+        return false
+    end
+    
+    local success, err = pcall(function()
+        Snapline = Drawing.new("Line")
+        Snapline.Visible = false
+    end)
+    
+    if not success then
+        DebugPrint("Błąd tworzenia Snapline: " .. tostring(err))
+        return false
+    end
+    
+    return true
+end
+
 local function UpdateSnapline()
+    if not Snapline then return end
+    
     pcall(function()
         if AimBotCore.Config.SnaplineEnabled and AimBotCore.Config.Enabled and CurrentTarget and IsAlive(CurrentTarget) then
             local TargetPart = CurrentTarget.Character:FindFirstChild(AimBotCore.Config.CurrentBone) or CurrentTarget.Character.HumanoidRootPart
@@ -183,41 +228,50 @@ local function UpdateSnapline()
     end)
 end
 
--- Silent Aim Hook
+-- Silent Aim Hook (tylko jeśli jest wspierany)
 local OldNamecall
-OldNamecall = hookmetamethod(game, "__namecall", function(Self, ...)
-    local Method = getnamecallmethod()
-    local Args = {...}
-    
-    if Method == "FireServer" or Method == "InvokeServer" then
-        if SilentAimTarget and AimBotCore.Config.SilentAim and AimBotCore.Config.Enabled then
-            if string.find(tostring(Self), "Remot") and string.find(string.lower(tostring(Self)), "fire") or string.find(string.lower(tostring(Self)), "shoot") then
-                for i, v in pairs(Args) do
-                    if typeof(v) == "Vector3" then
-                        Args[i] = SilentAimTarget.Position
-                        break
+if hookmetamethod then
+    OldNamecall = hookmetamethod(game, "__namecall", function(Self, ...)
+        local Method = getnamecallmethod()
+        local Args = {...}
+        
+        if Method == "FireServer" or Method == "InvokeServer" then
+            if SilentAimTarget and AimBotCore.Config.SilentAim and AimBotCore.Config.Enabled then
+                if string.find(tostring(Self), "Remot") and (string.find(string.lower(tostring(Self)), "fire") or string.find(string.lower(tostring(Self)), "shoot")) then
+                    for i, v in pairs(Args) do
+                        if typeof(v) == "Vector3" then
+                            Args[i] = SilentAimTarget.Position
+                            break
+                        end
                     end
                 end
             end
-        end
-    elseif Method == "Raycast" then
-        if SilentAimTarget and AimBotCore.Config.SilentAim and AimBotCore.Config.Enabled then
-            if Args[2] and typeof(Args[2]) == "Vector3" then
-                local Direction = (SilentAimTarget.Position - Args[1]).Unit
-                Args[2] = Direction * Args[2].Magnitude
+        elseif Method == "Raycast" then
+            if SilentAimTarget and AimBotCore.Config.SilentAim and AimBotCore.Config.Enabled then
+                if Args[2] and typeof(Args[2]) == "Vector3" then
+                    local Direction = (SilentAimTarget.Position - Args[1]).Unit
+                    Args[2] = Direction * Args[2].Magnitude
+                end
             end
         end
-    end
-    
-    return OldNamecall(Self, unpack(Args))
-end)
+        
+        return OldNamecall(Self, unpack(Args))
+    end)
+else
+    DebugPrint("hookmetamethod nie jest wspierane - Silent Aim nie będzie działać")
+end
 
 -- Główna pętla AimBot
 local function MainLoop()
-    if AimBotCore.Config.Enabled and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+    -- ZMIENIONO: Usunięto warunek prawego przycisku myszy dla testów
+    -- Teraz aimbot będzie działać gdy jest włączony
+    if AimBotCore.Config.Enabled then
         CurrentTarget = GetClosestPlayer()
         if CurrentTarget then
-            AimAt(CurrentTarget)
+            -- Tylko dla testów - dodaj warunek z przyciskiem myszy jeśli chcesz
+            if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+                AimAt(CurrentTarget)
+            end
         end
     else
         CurrentTarget = nil
@@ -228,12 +282,24 @@ end
 
 -- Publiczne funkcje modułu
 function AimBotCore:Initialize()
-    CreateFOVCircle()
+    DebugPrint("Inicjalizacja AimBot Core...")
+    
+    -- Sprawdź wsparcie dla Drawing API
+    if IsDrawingSupported() then
+        DebugPrint("Drawing API wspierane")
+        CreateFOVCircle()
+        CreateSnapline()
+    else
+        DebugPrint("Drawing API NIE jest wspierane!")
+    end
+    
     if AimConnection then 
         AimConnection:Disconnect() 
         AimConnection = nil
     end
     AimConnection = RunService.Heartbeat:Connect(MainLoop)
+    
+    DebugPrint("AimBot Core zainicjalizowany")
     return true
 end
 
@@ -241,6 +307,7 @@ function AimBotCore:UpdateConfig(newConfig)
     for key, value in pairs(newConfig) do
         if AimBotCore.Config[key] ~= nil then
             AimBotCore.Config[key] = value
+            DebugPrint("Zaktualizowano " .. key .. " na " .. tostring(value))
         end
     end
     UpdateFOVCircle()
@@ -253,6 +320,7 @@ end
 
 function AimBotCore:SetEnabled(enabled)
     AimBotCore.Config.Enabled = enabled
+    DebugPrint("AimBot " .. (enabled and "WŁĄCZONY" or "WYŁĄCZONY"))
     if not enabled then
         SilentAimTarget = nil
         CurrentTarget = nil
@@ -274,6 +342,7 @@ function AimBotCore:Cleanup()
         pcall(function() Snapline:Remove() end)
         Snapline = nil
     end
+    DebugPrint("Cleanup zakończony")
 end
 
 function AimBotCore:GetCurrentTarget()
